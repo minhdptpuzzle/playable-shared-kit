@@ -1,0 +1,33 @@
+{
+  "__type__": "cc.Material",
+  "_name": "ui-sprite-alpha-sep-alpha-000",
+  "_objFlags": 0,
+  "_native": "",
+  "_effectAsset": null,
+  "_techIdx": 0,
+  "_defines": [
+    {
+      "USE_ALPHA_TEST": false,
+      "USE_TEXTURE": true,
+      "CC_USE_EMBEDDED_ALPHA": true,
+      "IS_GRAY": false
+    }
+  ],
+  "_states": [
+    {
+      "rasterizerState": {},
+      "depthStencilState": {},
+      "blendState": {
+        "targets": [
+          {}
+        ]
+      }
+    }
+  ],
+  "_props": [
+    {
+      "alphaThreshold": 0.5,
+      "u_spriteAlpha": 0
+    }
+  ]
+}
