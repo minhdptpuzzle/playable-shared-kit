@@ -1,0 +1,38 @@
+{
+  "project_id": "screw_out_factory_playable",
+  "brief_id": "SOF_BH_IQ_C_DB_B_G_C_Minh_130526",
+  "android_bundle_id": "com.ntt.screw.out.factory",
+  "ios_bundle_id": "com.juicejoy.screw.out.factory",
+  "gameAnalytics": {
+    "gameKey": "75062136d1e176286e9bc4d3b20899c3",
+    "gameSecret": "88c8bb77812643ec085bc43439573fcecc42da12",
+    "build": "1.0.0",
+    "verboseLog": true
+  },
+  "engagement": {
+    "target_duration": 300,
+    "heartbeat_interval": 5
+  },
+  "interactions": {
+    "target_clicks": 50
+  },
+  "events": {
+    "playableLoaded": "playable_loaded",
+    "playableClicked": "playable_clicked",
+    "gameEnd": "playable_game_end",
+    "sessionStart": "engagement_session_start",
+    "sessionStay": "engagement_stay_{seconds}_seconds",
+    "targetDurationReached": "engagement_target_duration_reached",
+    "sessionEnd": "engagement_session_end",
+    "interactionStep": "interaction_step_{step}",
+    "targetClicksReached": "interaction_target_clicks_reached"
+  },
+  "batch": {
+    "max_events": 5,
+    "flush_interval_seconds": 3
+  },
+  "offline": {
+    "storage_key": "game_tracking_offline_events",
+    "max_events": 100
+  }
+}
