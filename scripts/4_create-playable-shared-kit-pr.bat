@@ -2,9 +2,10 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem AI AGENT NOTE: bump CREATE_PLAYABLE_SHARED_KIT_PR_VERSION every time this file is updated.
-set "CREATE_PLAYABLE_SHARED_KIT_PR_VERSION=2.0.0"
+set "CREATE_PLAYABLE_SHARED_KIT_PR_VERSION=2.1.0"
 set "SUBMODULE_NAME=playable-shared-kit"
 set "REPO_WEB_URL=https://github.com/minhdptpuzzle/playable-shared-kit"
+set "REPO_API_SLUG=minhdptpuzzle/playable-shared-kit"
 set "SCRIPT_DIR=%~dp0"
 set "PROJECT_ROOT="
 set "REPO_DIR="
@@ -20,6 +21,10 @@ set "NEEDS_AUTO_BRANCH="
 set "AUTO_BRANCH_CREATED="
 set "COMMITS_AHEAD=0"
 set "COMPARE_URL="
+set "DUPLICATE_REMOTE_BRANCH="
+set "PR_TARGET_BRANCH="
+set "OPEN_URL="
+set "EXISTING_PR_URL="
 
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
@@ -172,11 +177,54 @@ if "!COMMITS_AHEAD!"=="0" (
     exit /b 1
 )
 
-set "COMPARE_URL=%REPO_WEB_URL%/compare/!BASE_BRANCH!...!CURRENT_BRANCH!?expand=1"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; $repo = $env:REPO_DIR; $baseBranch = $env:BASE_BRANCH; $currentBranch = $env:CURRENT_BRANCH; function Get-Signature([string]$repoPath, [string]$spec) { $diff = (git -C $repoPath diff --no-ext-diff --no-color $spec | Out-String); if ([string]::IsNullOrWhiteSpace($diff)) { return $null }; $sha = [System.Security.Cryptography.SHA256]::Create(); return [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($diff))).Replace('-', '').ToLowerInvariant() }; $baseSpec = 'origin/' + $baseBranch; $currentSignature = Get-Signature $repo ($baseSpec + '...' + $currentBranch); if ([string]::IsNullOrWhiteSpace($currentSignature)) { exit 0 }; $remoteRefs = @(git -C $repo for-each-ref --format='%(refname:short)' refs/remotes/origin/*); foreach ($ref in $remoteRefs) { if ($ref -eq 'origin' -or -not $ref.StartsWith('origin/')) { continue }; if ($ref -eq 'origin/HEAD' -or $ref -eq ('origin/' + $baseBranch) -or $ref -eq ('origin/' + $currentBranch)) { continue }; $branchName = $ref.Substring(7); if ([string]::IsNullOrWhiteSpace($branchName)) { continue }; $candidateSignature = Get-Signature $repo ($baseSpec + '...' + $branchName); if (-not [string]::IsNullOrWhiteSpace($candidateSignature) -and $candidateSignature -eq $currentSignature) { Write-Output $branchName; break } }"`) do set "DUPLICATE_REMOTE_BRANCH=%%i"
+
+if defined DUPLICATE_REMOTE_BRANCH (
+    echo [create-pr] Found existing remote branch with identical changes: !DUPLICATE_REMOTE_BRANCH!
+    set "PR_TARGET_BRANCH=!DUPLICATE_REMOTE_BRANCH!"
+    set "COMPARE_URL=%REPO_WEB_URL%/compare/!BASE_BRANCH!...!PR_TARGET_BRANCH!?expand=1"
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'SilentlyContinue'; $uri = 'https://api.github.com/repos/' + $env:REPO_API_SLUG + '/pulls?state=open&base=' + [Uri]::EscapeDataString($env:BASE_BRANCH) + '&head=' + [Uri]::EscapeDataString('minhdptpuzzle:' + $env:PR_TARGET_BRANCH); try { $response = Invoke-RestMethod -Headers @{ 'User-Agent' = 'playable-shared-kit-pr-tool' } -Uri $uri -Method Get; if ($response -and $response.Count -gt 0) { Write-Output $response[0].html_url } } catch { }"`) do set "EXISTING_PR_URL=%%i"
+    if defined EXISTING_PR_URL (
+        set "OPEN_URL=!EXISTING_PR_URL!"
+    ) else (
+        set "OPEN_URL=!COMPARE_URL!"
+    )
+
+    if /I "%CREATE_PR_DRY_RUN%"=="1" (
+        echo [dry-run] Duplicate remote branch detected. Would open: !OPEN_URL!
+        if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+        exit /b 0
+    )
+
+    echo [create-pr] Skipping new PR creation because the remote already has identical changes.
+    echo [create-pr] Opening existing PR or compare target:
+    echo !OPEN_URL!
+    start "" "!OPEN_URL!"
+    if errorlevel 1 (
+        echo [create-pr] Failed to open the browser automatically.
+        echo [create-pr] Open this URL manually:
+        echo !OPEN_URL!
+        if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+        exit /b 1
+    )
+
+    echo [done] Existing matching branch handled without creating a duplicate PR.
+    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+    exit /b 0
+)
+
+set "PR_TARGET_BRANCH=!CURRENT_BRANCH!"
+set "COMPARE_URL=%REPO_WEB_URL%/compare/!BASE_BRANCH!...!PR_TARGET_BRANCH!?expand=1"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'SilentlyContinue'; $uri = 'https://api.github.com/repos/' + $env:REPO_API_SLUG + '/pulls?state=open&base=' + [Uri]::EscapeDataString($env:BASE_BRANCH) + '&head=' + [Uri]::EscapeDataString('minhdptpuzzle:' + $env:PR_TARGET_BRANCH); try { $response = Invoke-RestMethod -Headers @{ 'User-Agent' = 'playable-shared-kit-pr-tool' } -Uri $uri -Method Get; if ($response -and $response.Count -gt 0) { Write-Output $response[0].html_url } } catch { }"`) do set "EXISTING_PR_URL=%%i"
+if defined EXISTING_PR_URL (
+    set "OPEN_URL=!EXISTING_PR_URL!"
+) else (
+    set "OPEN_URL=!COMPARE_URL!"
+)
 
 if /I "%CREATE_PR_DRY_RUN%"=="1" (
     echo [dry-run] Would push with: git -C "%REPO_DIR%" push -u origin !CURRENT_BRANCH!
-    echo [dry-run] Would open browser PR page: !COMPARE_URL!
+    echo [dry-run] Would open browser target: !OPEN_URL!
     if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
     exit /b 0
 )
@@ -190,13 +238,13 @@ if errorlevel 1 (
 )
 
 echo.
-echo [create-pr] Opening the browser PR page:
-echo !COMPARE_URL!
-start "" "!COMPARE_URL!"
+echo [create-pr] Opening the browser target:
+echo !OPEN_URL!
+start "" "!OPEN_URL!"
 if errorlevel 1 (
     echo [create-pr] Failed to open the browser automatically.
     echo [create-pr] Open this URL manually:
-    echo !COMPARE_URL!
+    echo !OPEN_URL!
     if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
     exit /b 1
 )
