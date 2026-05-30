@@ -2,15 +2,24 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem AI AGENT NOTE: bump CREATE_PLAYABLE_SHARED_KIT_PR_VERSION every time this file is updated.
-set "CREATE_PLAYABLE_SHARED_KIT_PR_VERSION=1.0.1"
+set "CREATE_PLAYABLE_SHARED_KIT_PR_VERSION=2.0.0"
 set "SUBMODULE_NAME=playable-shared-kit"
 set "REPO_WEB_URL=https://github.com/minhdptpuzzle/playable-shared-kit"
 set "SCRIPT_DIR=%~dp0"
 set "PROJECT_ROOT="
 set "REPO_DIR="
+set "PROJECT_NAME_RAW="
+set "PROJECT_NAME_SLUG="
+set "TIMESTAMP_UTC="
+set "AUTO_BRANCH="
+set "COMMIT_MESSAGE="
 set "BASE_BRANCH=main"
 set "CURRENT_BRANCH="
-set "HAS_DIRTY="
+set "ORIGINAL_BRANCH="
+set "NEEDS_AUTO_BRANCH="
+set "AUTO_BRANCH_CREATED="
+set "COMMITS_AHEAD=0"
+set "COMPARE_URL="
 
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
@@ -49,6 +58,28 @@ if not defined CURRENT_BRANCH (
     if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
     exit /b 1
 )
+set "ORIGINAL_BRANCH=%CURRENT_BRANCH%"
+
+for %%I in ("%PROJECT_ROOT%") do set "PROJECT_NAME_RAW=%%~nxI"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$name = $env:PROJECT_NAME_RAW; $slug = [regex]::Replace($name.ToLowerInvariant(), '[^a-z0-9._-]+', '-').Trim('-'); if ([string]::IsNullOrWhiteSpace($slug)) { $slug = 'project' }; Write-Output $slug"`) do set "PROJECT_NAME_SLUG=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')"`) do set "TIMESTAMP_UTC=%%i"
+
+if not defined PROJECT_NAME_SLUG set "PROJECT_NAME_SLUG=project"
+if not defined TIMESTAMP_UTC (
+    echo [create-pr] Failed to generate a UTC timestamp.
+    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+    exit /b 1
+)
+
+set "AUTO_BRANCH=auto-%PROJECT_NAME_SLUG%-%TIMESTAMP_UTC%"
+set "COMMIT_MESSAGE=chore: sync %PROJECT_NAME_SLUG% %TIMESTAMP_UTC%"
+
+git -C "%REPO_DIR%" fetch origin
+if errorlevel 1 (
+    echo [create-pr] Failed to fetch origin.
+    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+    exit /b 1
+)
 
 for /f "usebackq delims=" %%i in (`git -C "%REPO_DIR%" symbolic-ref refs/remotes/origin/HEAD 2^>nul`) do set "BASE_BRANCH=%%i"
 if defined BASE_BRANCH set "BASE_BRANCH=!BASE_BRANCH:refs/remotes/origin/=!"
@@ -56,62 +87,110 @@ if not defined BASE_BRANCH set "BASE_BRANCH=main"
 
 echo [info] Base branch: !BASE_BRANCH!
 echo [info] Current branch: !CURRENT_BRANCH!
+echo [info] Auto branch candidate: !AUTO_BRANCH!
+echo [info] Auto commit message: !COMMIT_MESSAGE!
 
 if /I "!CURRENT_BRANCH!"=="HEAD" (
-    echo [create-pr] Detached HEAD detected. Checkout a feature branch first.
-    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
-    exit /b 1
+    set "NEEDS_AUTO_BRANCH=1"
 )
 
 if /I "!CURRENT_BRANCH!"=="!BASE_BRANCH!" (
-    echo [create-pr] Current branch matches the base branch. Create or checkout a feature branch first.
-    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
-    exit /b 1
+    set "NEEDS_AUTO_BRANCH=1"
 )
 
-git -C "%REPO_DIR%" ls-remote --exit-code --heads origin "!CURRENT_BRANCH!" >nul 2>&1
-if errorlevel 1 (
-    echo [create-pr] Remote branch origin/!CURRENT_BRANCH! was not found.
-    echo [create-pr] Push it first with:
-    echo     git -C "%REPO_DIR%" push -u origin !CURRENT_BRANCH!
-    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
-    exit /b 1
+if defined NEEDS_AUTO_BRANCH (
+    git -C "%REPO_DIR%" rev-parse --verify --quiet "refs/heads/!AUTO_BRANCH!" >nul
+    if not errorlevel 1 (
+        echo [create-pr] Generated local branch already exists: !AUTO_BRANCH!
+        if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+        exit /b 1
+    )
+
+    git -C "%REPO_DIR%" ls-remote --exit-code --heads origin "!AUTO_BRANCH!" >nul 2>&1
+    if not errorlevel 1 (
+        echo [create-pr] Generated remote branch already exists: !AUTO_BRANCH!
+        if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+        exit /b 1
+    )
+
+    if /I "%CREATE_PR_DRY_RUN%"=="1" (
+        echo [dry-run] Would create and checkout branch: !AUTO_BRANCH!
+        set "CURRENT_BRANCH=!AUTO_BRANCH!"
+        set "AUTO_BRANCH_CREATED=1"
+    ) else (
+        echo [create-pr] Creating branch !AUTO_BRANCH!...
+        git -C "%REPO_DIR%" switch -c "!AUTO_BRANCH!"
+        if errorlevel 1 (
+            echo [create-pr] Failed to create branch !AUTO_BRANCH!.
+            if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+            exit /b 1
+        )
+        set "CURRENT_BRANCH=!AUTO_BRANCH!"
+        set "AUTO_BRANCH_CREATED=1"
+    )
 )
 
-for /f "usebackq delims=" %%i in (`git -C "%REPO_DIR%" status --porcelain`) do set "HAS_DIRTY=1"
-if defined HAS_DIRTY (
-    echo [warning] Uncommitted changes exist in "%REPO_DIR%".
-    echo [warning] The PR will only include committed changes already pushed to origin/!CURRENT_BRANCH!.
-    set "CONTINUE_WITH_DIRTY="
-    set /p "CONTINUE_WITH_DIRTY=Continue anyway? [y/N]: "
-    if /I not "!CONTINUE_WITH_DIRTY!"=="Y" (
+if /I "%CREATE_PR_DRY_RUN%"=="1" (
+    echo [dry-run] Would stage changes with: git -C "%REPO_DIR%" add -A
+    echo [dry-run] Would create a commit when changes exist with message: !COMMIT_MESSAGE!
+) else (
+    git -C "%REPO_DIR%" add -A
+    if errorlevel 1 (
+        echo [create-pr] Failed to stage changes.
         if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
         exit /b 1
     )
 )
 
-where gh >nul 2>&1
-if not errorlevel 1 (
-    echo.
-    echo [create-pr] Creating PR with GitHub CLI...
-    pushd "%REPO_DIR%"
-    call gh pr create --fill --base "!BASE_BRANCH!" --head "!CURRENT_BRANCH!"
-    set "GH_EXIT=!ERRORLEVEL!"
-    popd
-    if not "!GH_EXIT!"=="0" (
-        echo [create-pr] GitHub CLI failed to create the PR.
-        if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
-        exit /b !GH_EXIT!
+if /I not "%CREATE_PR_DRY_RUN%"=="1" (
+    git -C "%REPO_DIR%" diff --cached --quiet --exit-code
+    if errorlevel 1 (
+        echo [create-pr] Creating commit...
+        git -C "%REPO_DIR%" commit -m "!COMMIT_MESSAGE!"
+        if errorlevel 1 (
+            echo [create-pr] Failed to create commit.
+            if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+            exit /b 1
+        )
+    ) else (
+        echo [create-pr] No uncommitted local changes to commit.
     )
-    echo [done] PR flow completed through GitHub CLI.
+)
+
+for /f "usebackq delims=" %%i in (`git -C "%REPO_DIR%" rev-list --count "origin/!BASE_BRANCH!..HEAD" 2^>nul`) do set "COMMITS_AHEAD=%%i"
+if not defined COMMITS_AHEAD set "COMMITS_AHEAD=0"
+echo [info] Commits ahead of origin/!BASE_BRANCH!: !COMMITS_AHEAD!
+
+if "!COMMITS_AHEAD!"=="0" (
+    echo [create-pr] No commits ahead of origin/!BASE_BRANCH! to publish as a PR.
+    if defined AUTO_BRANCH_CREATED if /I not "%CREATE_PR_DRY_RUN%"=="1" (
+        echo [create-pr] Cleaning up empty auto branch !CURRENT_BRANCH!...
+        git -C "%REPO_DIR%" switch "!BASE_BRANCH!" >nul 2>&1
+        git -C "%REPO_DIR%" branch -D "!CURRENT_BRANCH!" >nul 2>&1
+    )
+    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+    exit /b 1
+)
+
+set "COMPARE_URL=%REPO_WEB_URL%/compare/!BASE_BRANCH!...!CURRENT_BRANCH!?expand=1"
+
+if /I "%CREATE_PR_DRY_RUN%"=="1" (
+    echo [dry-run] Would push with: git -C "%REPO_DIR%" push -u origin !CURRENT_BRANCH!
+    echo [dry-run] Would open browser PR page: !COMPARE_URL!
     if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
     exit /b 0
 )
 
-set "COMPARE_URL=%REPO_WEB_URL%/compare/!BASE_BRANCH!...!CURRENT_BRANCH!?expand=1"
+echo [create-pr] Pushing branch !CURRENT_BRANCH! to origin...
+git -C "%REPO_DIR%" push -u origin "!CURRENT_BRANCH!"
+if errorlevel 1 (
+    echo [create-pr] Failed to push branch !CURRENT_BRANCH! to origin.
+    if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
+    exit /b 1
+)
+
 echo.
-echo [create-pr] GitHub CLI ^(gh^) is not installed on this machine.
-echo [create-pr] Opening the browser PR page instead:
+echo [create-pr] Opening the browser PR page:
 echo !COMPARE_URL!
 start "" "!COMPARE_URL!"
 if errorlevel 1 (
@@ -122,6 +201,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [done] Browser opened. Complete the PR form on GitHub.
+echo [done] Branch !CURRENT_BRANCH! is pushed and the PR page is open.
 if /I not "%CREATE_PR_NO_PAUSE%"=="1" pause
 exit /b 0
