@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: Clone source repo (bare)
         run: |
-          git clone --bare https://x-access-token:${{ secrets.PERSONAL_MIRROR_TOKEN }}@github.com/${{ github.repository }}.git source.git
+          git clone --bare https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git source.git
 
       - name: Push to personal repo
         env:
