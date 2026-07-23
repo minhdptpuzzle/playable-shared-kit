@@ -147,6 +147,35 @@ function convertEuler(value) {
   return vec3(Number(-(value?.x || 0)), Number(value?.y || 0), Number(-(value?.z || 0)));
 }
 
+function cocosEulerFromQuaternion(value) {
+  const x = Number(value?.x || 0);
+  const y = Number(value?.y || 0);
+  const z = Number(value?.z || 0);
+  const w = Number(value?.w ?? 1);
+  const test = x * y + z * w;
+  const toDegree = 180 / Math.PI;
+  let bank;
+  let heading;
+  let attitude;
+
+  if (test > 0.499999) {
+    bank = 0;
+    heading = 2 * Math.atan2(x, w) * toDegree;
+    attitude = 90;
+  } else if (test < -0.499999) {
+    bank = 0;
+    heading = -2 * Math.atan2(x, w) * toDegree;
+    attitude = -90;
+  } else {
+    bank = Math.atan2(2 * x * w - 2 * y * z, 1 - 2 * x * x - 2 * z * z) * toDegree;
+    heading = Math.atan2(2 * y * w - 2 * x * z, 1 - 2 * y * y - 2 * z * z) * toDegree;
+    attitude = Math.asin(2 * test) * toDegree;
+  }
+
+  const clean = (angle) => Math.abs(angle) < 0.00001 ? 0 : angle;
+  return vec3(clean(bank), clean(heading), clean(attitude));
+}
+
 function unityColorToCocos(value, alphaOverride = null) {
   const source = value || {};
   const alpha = alphaOverride == null ? source.a : alphaOverride;
@@ -226,6 +255,7 @@ module.exports = {
   convertScale,
   convertRotation,
   convertEuler,
+  cocosEulerFromQuaternion,
   unityColorToCocos,
   findFiles,
   unityNumber,

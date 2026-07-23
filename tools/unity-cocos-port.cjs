@@ -40,6 +40,7 @@ const {
   ensureDir,
   readJsonIfExists,
   csvEscape,
+  cocosEulerFromQuaternion,
 } = require('./unity-cocos-port/core-utils');
 const { Reporter } = require('./unity-cocos-port/reporter');
 const createAssetImportPorter = require('./unity-cocos-port/asset-import-porter');
@@ -951,11 +952,6 @@ function convertRotation(value) {
   return quat(-Number(q.x || 0), -Number(q.y || 0), Number(q.z || 0), Number(q.w == null ? 1 : q.w));
 }
 
-function convertEuler(value) {
-  const v = value || {};
-  return vec3(-Number(v.x || 0), Number(v.y || 0), Number(v.z || 0));
-}
-
 function isUnityIdentityRotation(value) {
   const q = value || {};
   const epsilon = 0.000001;
@@ -969,7 +965,8 @@ function isUnityIdentityRotation(value) {
 
 function convertTransformEuler(transform) {
   if (isUnityIdentityRotation(transform?.localRotation)) return vec3();
-  return convertEuler(transform?.euler);
+  // Euler hints use Unity's handedness/order; derive Cocos Euler from the converted quaternion.
+  return cocosEulerFromQuaternion(convertRotation(transform?.localRotation));
 }
 
 function unityColorToCocos(value, alphaOverride = null) {
