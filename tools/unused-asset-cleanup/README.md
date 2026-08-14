@@ -65,6 +65,63 @@ node playable-shared-kit/tools/unused-asset-cleanup.cjs --include-bundles
 Danh sách in ra ở chế độ này là **ứng viên cần review tay**, không phải kết luận.
 Chỉ xóa khi đã tự xác nhận không có code nào load path đó.
 
+## Đưa dependency ra khỏi bundle
+
+Trong bundle chỉ nên có asset thật sự được load động theo path. Dependency kéo
+theo bằng UUID không cần nằm đó: chúng làm phình `config.json` của bundle và làm
+rối cấu trúc. Tool phân loại asset trong bundle thành ba nhóm:
+
+- **entry point** — có path literal tương ứng trong code, khai bằng `--root`, hoặc
+  có UUID xuất hiện trực tiếp trong file `.ts`/`.js`. Không bao giờ bị move.
+
+  Trường hợp UUID hardcode rất dễ bỏ sót: builder của Cocos không đọc code, nên
+  asset chỉ được gọi qua `assetManager.loadAny('<uuid>')` sẽ **không được đóng
+  gói** nếu nó rời khỏi bundle. Về mặt dependency graph nó trông như dependency
+  bình thường, nhưng move ra ngoài là vỡ runtime.
+- **dependency-only** — không phải entry, nhưng được asset khác reference qua
+  UUID. Đây là nhóm nên chuyển ra ngoài.
+- **neither** — không thuộc hai nhóm trên. Tool chỉ liệt kê để review tay, không
+  tự xử lý, vì đây có thể là asset load qua path mà tool không suy ra được.
+
+Xem trước kế hoạch chuyển:
+
+```powershell
+node playable-shared-kit/tools/unused-asset-cleanup.cjs --move-bundle-deps
+```
+
+Thực hiện:
+
+```powershell
+node playable-shared-kit/tools/unused-asset-cleanup.cjs --move-bundle-deps --apply
+```
+
+Đích đến chọn theo đuôi file, ưu tiên thư mục **đã có sẵn** trong `assets` (khớp
+cả dạng số ít/số nhiều, ví dụ `texture` hay `textures`), không có thì tạo mới:
+
+| Đuôi file | Thư mục |
+| --- | --- |
+| `.png .jpg .jpeg .webp .bmp .tga .psd .tif .tiff` | `textures` |
+| `.mtl .pmtl` | `materials` |
+| `.effect` | `effects` |
+| `.fbx .gltf .glb .obj .dae` | `models` |
+| `.anim .animgraph` | `animations` |
+| `.prefab` | `prefabs` |
+| `.mp3 .ogg .wav .m4a .aac` | `sounds` |
+| `.ttf .otf .fnt .bmfont` | `fonts` |
+| `.skel .atlas` | `spine` |
+| `.json .txt .bin .plist` | `data` |
+
+Đổi thư mục gốc bằng `--deps-dir <path>`. Đuôi file không nằm trong bảng thì
+được giữ nguyên tại chỗ và báo ở mục `Left in place`.
+
+**Vì sao move an toàn:** Cocos reference asset theo UUID nằm trong `.meta`, không
+theo đường dẫn. Tool move file kèm `.meta` nên UUID không đổi và mọi reference
+giữ nguyên. Trùng tên ở đích thì tool tự thêm hậu tố `_1`, `_2` và đánh dấu
+`[renamed]`. Sau khi move, tool audit lại và fail nếu số asset unused tăng lên.
+
+Không chạy chung `--delete` với `--move-bundle-deps` trong một lệnh; tool chặn để
+mỗi thao tác được review riêng.
+
 Xuất báo cáo JSON đầy đủ:
 
 ```powershell
@@ -124,6 +181,9 @@ toàn bộ scene trong `assets`.
 - `--scene <path>`: scene runtime root, có thể lặp lại.
 - `--root <path>`: asset runtime root bổ sung, có thể lặp lại.
 - `--include-bundles`: audit cả asset nằm trong asset bundle. Mặc định tắt.
+- `--move-bundle-deps`: xem kế hoạch chuyển dependency ra khỏi bundle.
+- `--apply`: thực hiện kế hoạch của `--move-bundle-deps`.
+- `--deps-dir <path>`: thư mục gốc cho asset được chuyển ra. Default: `assets`.
 - `--json`: in báo cáo JSON đầy đủ.
 - `--delete`: xóa asset sau khi kiểm tra reverse reference.
 - `--help`: xem hướng dẫn CLI.

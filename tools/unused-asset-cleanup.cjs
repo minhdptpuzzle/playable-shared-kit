@@ -9,6 +9,30 @@ const UUID_PATTERN =
 const SOURCE_EXTENSIONS = new Set(['.js', '.ts']);
 const DEFAULT_SCOPE = 'all';
 
+// Where a bundle dependency is relocated to, by extension. An existing folder with a
+// matching name is reused before a new one is created.
+const DEPENDENCY_FOLDERS = [
+  {
+    folder: 'textures',
+    extensions: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tga', '.psd', '.tif', '.tiff'],
+  },
+  { folder: 'materials', extensions: ['.mtl', '.pmtl'] },
+  { folder: 'effects', extensions: ['.effect'] },
+  { folder: 'models', extensions: ['.fbx', '.gltf', '.glb', '.obj', '.dae'] },
+  { folder: 'animations', extensions: ['.anim', '.animgraph'] },
+  { folder: 'prefabs', extensions: ['.prefab'] },
+  { folder: 'sounds', extensions: ['.mp3', '.ogg', '.wav', '.m4a', '.aac'] },
+  { folder: 'fonts', extensions: ['.ttf', '.otf', '.fnt', '.bmfont'] },
+  { folder: 'spine', extensions: ['.skel', '.atlas'] },
+  { folder: 'data', extensions: ['.json', '.txt', '.bin', '.plist'] },
+];
+
+const FOLDER_BY_EXTENSION = new Map(
+  DEPENDENCY_FOLDERS.flatMap((entry) =>
+    entry.extensions.map((extension) => [extension, entry.folder]),
+  ),
+);
+
 function fail(message) {
   console.error(`[unused-asset-cleanup] ERROR: ${message}`);
   process.exit(1);
@@ -48,6 +72,9 @@ function parseArgs(argv) {
     roots: [],
     json: false,
     includeBundles: false,
+    moveBundleDeps: false,
+    apply: false,
+    depsDir: 'assets',
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -55,6 +82,9 @@ function parseArgs(argv) {
     if (arg === '--delete') options.delete = true;
     else if (arg === '--json') options.json = true;
     else if (arg === '--include-bundles') options.includeBundles = true;
+    else if (arg === '--move-bundle-deps') options.moveBundleDeps = true;
+    else if (arg === '--apply') options.apply = true;
+    else if (arg === '--deps-dir') options.depsDir = argv[++index] || '';
     else if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--project-root') options.projectRoot = argv[++index] || '';
     else if (arg === '--prefab-dir') options.prefabDir = argv[++index] || '';
@@ -66,6 +96,12 @@ function parseArgs(argv) {
 
   if (!['all', 'prefabs'].includes(options.scope)) {
     fail(`Invalid --scope "${options.scope}". Expected "all" or "prefabs".`);
+  }
+  if (options.apply && !options.moveBundleDeps) {
+    fail('--apply only applies to --move-bundle-deps.');
+  }
+  if (options.moveBundleDeps && options.delete) {
+    fail('Run --delete and --move-bundle-deps separately so each result can be reviewed.');
   }
   return options;
 }
@@ -87,6 +123,11 @@ Options:
   --include-bundles      Audit assets inside asset bundles (incl. resources) too.
                          Off by default: bundle contents are dynamically loadable
                          and cannot be proven unused by static analysis.
+  --move-bundle-deps     Move assets that live inside a bundle but are only reached
+                         as a dependency out to a matching folder, so bundles keep
+                         only their real dynamic-load entry points. Plan only.
+  --apply                Perform the --move-bundle-deps plan instead of previewing.
+  --deps-dir <path>      Base folder for moved dependencies. Default: assets.
   --json                 Print the complete audit report as JSON.
   --help, -h             Show help.
 
@@ -174,6 +215,100 @@ function detectBundleDirectories(projectRoot, assetsRoot) {
     });
   }
   return bundles.sort((a, b) => a.directory.localeCompare(b.directory));
+}
+
+function resolveDependencyDirectory(projectRoot, baseDirectory, folder) {
+  const base = path.join(projectRoot, baseDirectory);
+  const wanted = [folder, folder.replace(/s$/, ''), `${folder}s`].map((item) =>
+    item.toLowerCase(),
+  );
+
+  const existing = walk(base)
+    .filter((file) => file.endsWith('.meta'))
+    .map((file) => file.slice(0, -'.meta'.length))
+    .filter((file) => fs.existsSync(file) && fs.statSync(file).isDirectory())
+    .filter((file) => wanted.includes(path.basename(file).toLowerCase()))
+    .sort((a, b) => a.split(path.sep).length - b.split(path.sep).length)[0];
+
+  if (existing) return toPosix(path.relative(projectRoot, existing));
+  return toPosix(path.posix.join(toPosix(baseDirectory), folder));
+}
+
+function planBundleDependencyMoves(projectRoot, options, bundleDependencyAssets) {
+  const baseDirectory = normalizeAssetPath(projectRoot, options.depsDir || 'assets');
+  const directoryByFolder = new Map();
+  const takenTargets = new Set();
+  const moves = [];
+  const skipped = [];
+
+  for (const asset of [...bundleDependencyAssets].sort((a, b) => a.localeCompare(b))) {
+    const extension = path.posix.extname(asset).toLowerCase();
+    const folder = FOLDER_BY_EXTENSION.get(extension);
+    if (!folder) {
+      skipped.push({ asset, reason: `No destination folder mapped for "${extension}"` });
+      continue;
+    }
+
+    if (!directoryByFolder.has(folder)) {
+      directoryByFolder.set(
+        folder,
+        resolveDependencyDirectory(projectRoot, baseDirectory, folder),
+      );
+    }
+    const destinationDirectory = directoryByFolder.get(folder);
+
+    const baseName = path.posix.basename(asset, extension);
+    let target = `${destinationDirectory}/${baseName}${extension}`;
+    let suffix = 1;
+    while (
+      takenTargets.has(target) ||
+      fs.existsSync(path.join(projectRoot, target))
+    ) {
+      target = `${destinationDirectory}/${baseName}_${suffix}${extension}`;
+      suffix += 1;
+    }
+    takenTargets.add(target);
+    moves.push({ from: asset, to: target, renamed: path.posix.basename(target) !== path.posix.basename(asset) });
+  }
+
+  return { baseDirectory, moves, skipped };
+}
+
+function applyBundleDependencyMoves(audit) {
+  const { projectRoot, assetsRoot } = audit;
+  const touchedDirectories = new Set();
+
+  for (const move of audit.bundleDependencyPlan.moves) {
+    const fromPath = path.resolve(projectRoot, move.from);
+    const toPath = path.resolve(projectRoot, move.to);
+    if (
+      !fromPath.startsWith(`${assetsRoot}${path.sep}`) ||
+      !toPath.startsWith(`${assetsRoot}${path.sep}`)
+    ) {
+      fail(`Refusing to move outside assets: ${move.from} -> ${move.to}`);
+    }
+    if (!fs.existsSync(fromPath)) fail(`Source asset disappeared: ${move.from}`);
+    if (fs.existsSync(toPath)) fail(`Destination already exists: ${move.to}`);
+
+    fs.mkdirSync(path.dirname(toPath), { recursive: true });
+    // The .meta carries the UUID, so moving both files keeps every reference intact.
+    fs.renameSync(fromPath, toPath);
+    if (fs.existsSync(`${fromPath}.meta`)) {
+      fs.renameSync(`${fromPath}.meta`, `${toPath}.meta`);
+    }
+
+    let directory = path.dirname(fromPath);
+    while (directory.startsWith(`${assetsRoot}${path.sep}`)) {
+      touchedDirectories.add(directory);
+      directory = path.dirname(directory);
+    }
+  }
+
+  for (const directory of [...touchedDirectories].sort((a, b) => b.length - a.length)) {
+    if (!fs.existsSync(directory) || fs.readdirSync(directory).length > 0) continue;
+    fs.rmdirSync(directory);
+    if (fs.existsSync(`${directory}.meta`)) fs.unlinkSync(`${directory}.meta`);
+  }
 }
 
 function detectDynamicResourceRoots(projectRoot, assetFiles) {
@@ -422,6 +557,41 @@ function createAudit(projectRoot, options) {
     (asset) => !staticReachable.has(asset),
   );
 
+  // A bundle should only hold assets the code loads by path. Anything else in there is
+  // pulled in by UUID anyway, so it bloats the bundle config for no reason.
+  // An asset whose UUID is hardcoded in code (assetManager.loadAny(uuid)) only ships when
+  // it sits in a bundle: the builder never parses code, so no serialized reference exists.
+  // Those must stay put even though the graph sees them as a plain dependency.
+  const uuidPinnedBySource = sourceRoots.flatMap((source) => [
+    ...(dependencies.get(source) || []),
+  ]);
+  const dynamicEntrySet = new Set([
+    ...detectedDynamicRoots,
+    ...manualRoots,
+    ...uuidPinnedBySource,
+  ]);
+  const bundleEntryAssets = [...bundleAssets].filter((asset) =>
+    dynamicEntrySet.has(asset),
+  );
+  const bundleDependencyAssets = [...bundleAssets].filter((asset) => {
+    if (dynamicEntrySet.has(asset)) return false;
+    if (SOURCE_EXTENSIONS.has(path.posix.extname(asset))) return false;
+    const liveReferrers = [...(referrers.get(asset) || [])].filter((referrer) =>
+      runtimeReachable.has(referrer),
+    );
+    return liveReferrers.length > 0;
+  });
+  const bundleDependencySet = new Set(bundleDependencyAssets);
+  const bundleStrayAssets = [...bundleAssets].filter(
+    (asset) =>
+      !dynamicEntrySet.has(asset) &&
+      !bundleDependencySet.has(asset) &&
+      !SOURCE_EXTENSIONS.has(path.posix.extname(asset)),
+  );
+  const bundleDependencyPlan = options.moveBundleDeps
+    ? planBundleDependencyMoves(projectRoot, options, bundleDependencyAssets)
+    : { baseDirectory: '', moves: [], skipped: [] };
+
   const prefabPrefix = `${normalizeAssetPath(projectRoot, options.prefabDir).replace(/\/+$/, '')}/`;
   const prefabs = assetFiles.filter(
     (file) => file.startsWith(prefabPrefix) && file.endsWith('.prefab'),
@@ -473,12 +643,18 @@ function createAudit(projectRoot, options) {
     projectRoot,
     assetsRoot,
     includeBundles: options.includeBundles,
+    moveBundleDeps: options.moveBundleDeps,
+    apply: options.apply,
     runtimeRoots,
     detectedDynamicRoots,
     externalUuidRoots,
     bundleDirectories,
     bundleAssets,
     bundleProtectedAssets,
+    bundleEntryAssets,
+    bundleDependencyAssets,
+    bundleStrayAssets,
+    bundleDependencyPlan,
     missingRoots,
     sourceRoots,
     uuidsByOwner,
@@ -585,9 +761,18 @@ function report(audit, asJson) {
       bundleCount: audit.bundleDirectories.length,
       bundleAssetCount: audit.bundleAssets.size,
       bundleProtectedAssetCount: audit.bundleProtectedAssets.length,
+      bundleEntryAssetCount: audit.bundleEntryAssets.length,
+      bundleDependencyAssetCount: audit.bundleDependencyAssets.length,
+      bundleDependencyMoveCount: audit.bundleDependencyPlan.moves.length,
+      bundleStrayAssetCount: audit.bundleStrayAssets.length,
     },
+    bundleStrayAssets: audit.sort(audit.bundleStrayAssets),
     bundles: audit.bundleDirectories,
     bundleProtectedAssets: audit.sort(audit.bundleProtectedAssets),
+    bundleEntryAssets: audit.sort(audit.bundleEntryAssets),
+    bundleDependencyAssets: audit.sort(audit.bundleDependencyAssets),
+    bundleDependencyMoves: audit.bundleDependencyPlan.moves,
+    bundleDependencySkipped: audit.bundleDependencyPlan.skipped,
     runtimeRoots: audit.sort(audit.runtimeRoots),
     detectedDynamicRoots: audit.sort(audit.detectedDynamicRoots),
     externalUuidRoots: audit.sort(audit.externalUuidRoots),
@@ -628,9 +813,36 @@ function report(audit, asJson) {
   if (result.missingRoots.length > 0) {
     log(`Missing runtime roots: ${result.missingRoots.join(', ')}`);
   }
+  if (result.counts.bundleCount > 0) {
+    log(
+      `Bundle entry points (loaded by path): ${result.counts.bundleEntryAssetCount}, ` +
+      `dependency-only assets: ${result.counts.bundleDependencyAssetCount}, ` +
+      `neither: ${result.counts.bundleStrayAssetCount}`,
+    );
+    if (result.counts.bundleStrayAssetCount > 0 && !asJson) {
+      console.log(
+        '\nIn a bundle but neither loaded by path nor referenced ' +
+        '(review by hand — likely unused, or loaded via a path this tool cannot see):',
+      );
+      for (const asset of result.bundleStrayAssets) console.log(`- ${asset}`);
+    }
+  }
   if (result.deletableAssets.length > 0) {
     console.log('\nDeletable assets:');
     for (const asset of result.deletableAssets) console.log(`- ${asset}`);
+  }
+  if (audit.moveBundleDeps) {
+    const { moves, skipped } = audit.bundleDependencyPlan;
+    console.log(
+      `\nBundle dependency moves (${moves.length})${audit.apply ? '' : ' — preview, re-run with --apply'}:`,
+    );
+    for (const move of moves) {
+      console.log(`- ${move.from}\n  -> ${move.to}${move.renamed ? '  [renamed: name clash]' : ''}`);
+    }
+    if (skipped.length > 0) {
+      console.log(`\nLeft in place (${skipped.length}):`);
+      for (const item of skipped) console.log(`- ${item.asset}  (${item.reason})`);
+    }
   }
 }
 
@@ -648,6 +860,32 @@ function main() {
 
   const audit = createAudit(projectRoot, options);
   report(audit, options.json);
+
+  if (options.moveBundleDeps) {
+    const planned = audit.bundleDependencyPlan.moves.length;
+    if (!options.apply) {
+      if (!options.json && planned > 0) {
+        log('Preview only. Re-run with --apply to move the listed assets.');
+      }
+      return;
+    }
+
+    applyBundleDependencyMoves(audit);
+    log(`Moved ${planned} dependency assets out of their bundles.`);
+
+    const verification = createAudit(projectRoot, options);
+    if (verification.unusedAssets.size > audit.unusedAssets.size) {
+      fail(
+        `Post-move verification failed: unused assets grew from ${audit.unusedAssets.size} ` +
+        `to ${verification.unusedAssets.size}. Restore with "git checkout -- assets".`,
+      );
+    }
+    log(
+      `Post-move verification passed. Bundle assets: ${audit.bundleAssets.size} -> ` +
+      `${verification.bundleAssets.size}.`,
+    );
+    return;
+  }
 
   if (!options.delete) {
     if (!options.json && (audit.deletable.size > 0 || audit.deletableMetaFiles.size > 0)) {
