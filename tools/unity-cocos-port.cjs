@@ -3132,6 +3132,18 @@ function materializeStrippedTransforms(context) {
     if (transform.parentId) referencedTransformIds.add(transform.parentId);
   }
 
+  // Unity prefab variants do not add model/prefab instance transforms to the
+  // source hierarchy's m_Children list. The only ownership edge is stored in
+  // the outer PrefabInstance.m_AddedGameObjects list. Treat those stripped
+  // transforms as referenced children so variant-only visuals are
+  // materialized instead of being silently discarded.
+  for (const instanceInfo of prefabInstanceInfos.values()) {
+    for (const transformId of instanceInfo.addedGameObjectTransformIds || []) {
+      referencedTransformIds.add(transformId);
+      childReferencedTransformIds.add(transformId);
+    }
+  }
+
   collapseStrippedTransformsToInstanceRoot({
     file,
     byId,
@@ -3420,6 +3432,7 @@ function parsePrefabInstanceInfo(doc) {
     overridesByTarget: new Map(),
     removedGameObjectSourceIds: parsePrefabInstanceReferenceList(doc, 'm_RemovedGameObjects'),
     removedComponentSourceIds: parsePrefabInstanceReferenceList(doc, 'm_RemovedComponents'),
+    addedGameObjectTransformIds: parsePrefabInstanceAddedGameObjectIds(doc),
   };
 
   let current = null;
@@ -3458,6 +3471,25 @@ function parsePrefabInstanceInfo(doc) {
   }
 
   return info;
+}
+
+function parsePrefabInstanceAddedGameObjectIds(doc) {
+  const result = [];
+  const lines = doc?.lines || [];
+  const start = lines.findIndex((line) => /^\s*m_AddedGameObjects:\s*$/.test(line));
+  if (start < 0) return result;
+  const fieldIndent = String(lines[start]).match(/^\s*/)?.[0]?.length || 0;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = String(lines[index] || '');
+    if (!line.trim()) continue;
+    const indent = line.match(/^\s*/)?.[0]?.length || 0;
+    if (indent <= fieldIndent && !line.trimStart().startsWith('- ')) break;
+    const match = /^\s*addedObject:\s*(\{.*\})\s*$/.exec(line);
+    if (!match) continue;
+    const fileId = unityRefFileId(parseUnityScalar(match[1]));
+    if (fileId) result.push(fileId);
+  }
+  return result;
 }
 
 function parsePrefabInstanceReferenceList(doc, fieldName) {
