@@ -615,3 +615,14 @@ Keep Optimize and Compress enabled. Before approving reduction, compare source
 and imported index counts for every submesh, especially planar backdrops; inspect
 both levels in Preview. Repair through Asset DB, preserving UUIDs, and reload
 the extension before reimport so an old listener cannot reapply the bad policy.
+
+### Keep invisible particle drivers running
+
+`ParticleSystemRenderer.enabled=false` and render mode `None` hide geometry only.
+They do not stop particle simulation, collision callbacks or sub-emitters. Never
+map them to `cc.ParticleSystem.enabled=false`. The porter attaches
+`UnityParticleRendererVisibility` to hide CPU particle/trail models separately.
+Assert both an active simulation and an invisible renderer in Preview, then verify
+that source collision and sub-emitter counts still advance. Birth sub-emitters
+using rate-over-distance need an independent distance cursor per parent particle;
+a fixed rate per second and a capped sample of parents are not equivalent.
