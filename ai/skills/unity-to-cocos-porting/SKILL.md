@@ -618,8 +618,9 @@ the extension before reimport so an old listener cannot reapply the bad policy.
 
 ### Keep invisible particle drivers running
 
-`ParticleSystemRenderer.enabled=false` and render mode `None` hide geometry only.
-They do not stop particle simulation, collision callbacks or sub-emitters. Never
+`ParticleSystemRenderer.enabled=false` hides particles and trails. Render mode
+`None` hides only particle geometry; enabled trails remain visible. Neither
+stops particle simulation, collision callbacks or sub-emitters. Never
 map them to `cc.ParticleSystem.enabled=false`. The porter attaches
 `UnityParticleRendererVisibility` to hide CPU particle/trail models separately.
 Assert both an active simulation and an invisible renderer in Preview, then verify
