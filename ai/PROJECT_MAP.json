@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "generatedAt": "2026-09-19T22:07:09.972Z",
+    "generatedAt": "2026-09-19T23:21:41.648Z",
     "description": "Compact project manifest for AI Agents. Use this instead of scanning file trees.",
     "project": {
       "projectName": "cc_playable_framework",
@@ -79,7 +79,7 @@
     {
       "name": "Magic hit",
       "path": "assets/prefabs/aoe/Magic hit.prefab",
-      "sizeKb": 231.5
+      "sizeKb": 171.2
     },
     {
       "name": "Lightning strike",
@@ -208,7 +208,7 @@
     }
   ],
   "scripts": {
-    "count": 45,
+    "count": 47,
     "byDir": [
       {
         "dir": "assets/script/shared/sdk/analytics",
@@ -303,7 +303,9 @@
           "AoeParticleCollision",
           "AoeParticleLights",
           "AoeSimulationStep",
+          "UnityNoiseKernel",
           "UnityParticleHierarchyTransformSync",
+          "UnityParticleNoise",
           "UnityParticleRateOverDistanceEmitter",
           "UnityParticleRendererVisibility",
           "UnityParticleSubEmitterFollower",
@@ -389,7 +391,7 @@
     },
     "prefabsInAssets": {
       "count": 35,
-      "totalKb": 8672.4,
+      "totalKb": 8612.1,
       "sample": [
         "assets/prefabs/aoe/Knives.prefab",
         "assets/prefabs/aoe/Front spikes attack.prefab",
