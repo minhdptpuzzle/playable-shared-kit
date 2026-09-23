@@ -12,6 +12,8 @@ export class PlayableAdDownloadEvent extends Component {
       || superHtmlPlayable.get_download_url();
 
     GameTrackingService.logDownloadClick({ url });
-    superHtmlPlayable.download();
+    // End-card buttons must also work in browser Preview, where the super_html host
+    // bridge is absent. The automatic flag enables the current-tab URL fallback.
+    superHtmlPlayable.download({ automatic: true });
   }
 }
