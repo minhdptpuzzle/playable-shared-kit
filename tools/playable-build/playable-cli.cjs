@@ -603,10 +603,15 @@ function runCommandAsync(command, args, cwd, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      stdio: 'inherit',
+      stdio: opts.onOutput ? ['ignore', 'pipe', 'pipe'] : 'inherit',
       shell: false,
+      windowsHide: true,
       env,
     });
+    if (opts.onOutput) {
+      child.stdout.on('data', chunk => { process.stdout.write(chunk); opts.onOutput(chunk.toString()); });
+      child.stderr.on('data', chunk => { process.stderr.write(chunk); opts.onOutput(chunk.toString()); });
+    }
     if (onSpawn) {
       try {
         onSpawn(child);
@@ -617,6 +622,10 @@ function runCommandAsync(command, args, cwd, opts = {}) {
 
     child.on('error', (error) => reject(error));
     child.on('close', (status, signal) => {
+      if (signal || status === null) {
+        reject(new Error(`Command terminated (${signal || 'no exit status'}): ${command}`));
+        return;
+      }
       if (typeof status === 'number' && status !== 0 && !allowedExitCodes.includes(status)) {
         reject(new Error(`Command failed (${status}): ${command} ${args.join(' ')}`));
         return;
@@ -955,7 +964,13 @@ async function runBuildTask(task, cocosPath, runtimeOptions = {}) {
   const withTemp = workerTempDir ? ` (temp: ${path.relative(ROOT_DIR, workerTempDir)})` : '';
   log(`Building ${brief} with ${path.relative(ROOT_DIR, configPath)}${withTemp}`);
 
-  const result = await runCommandAsync(
+  const { assertFreshBuild } = require('./build-integrity.cjs');
+  const releaseStartup = runtimeOptions.acquireStartup ? await runtimeOptions.acquireStartup() : () => {};
+  const startedAt = Date.now();
+  let startupOutput = '';
+  let result;
+  try {
+    result = await runCommandAsync(
     cocosPath,
     ['--project', ROOT_DIR, '--build', `configPath=${configPath}`],
     ROOT_DIR,
@@ -964,16 +979,18 @@ async function runBuildTask(task, cocosPath, runtimeOptions = {}) {
       allowedExitCodes: [36],
       setEnv: effectiveEnv,
       onSpawn: (child) => trySetProcessPriority(child.pid, processPriority),
+      onOutput: chunk => {
+        startupOutput = (startupOutput + chunk).slice(-4096);
+        if (startupOutput.includes('Start enter command build with options')) releaseStartup();
+      },
     },
   );
-
-  if (typeof result.status === 'number' && result.status === 36) {
-    if (buildPath && fs.existsSync(buildPath)) {
-      warn(`Cocos exited with code 36 but build output exists at ${path.relative(ROOT_DIR, buildPath)}. Continuing.`);
-    } else {
-      throw new Error(`Cocos exited with code 36 and no build output found for ${brief}.`);
-    }
+  } finally {
+    releaseStartup();
   }
+
+  assertFreshBuild(buildPath, readBuildConfig(configPath), startedAt);
+  if (result.status === 36) warn(`Cocos exited with code 36; verified fresh artifacts for ${brief}.`);
 
   processBuildOutputByPath(buildPath);
   log(`Build done: ${brief}`);
@@ -1062,6 +1079,7 @@ async function buildBriefs(options) {
   const runtimeOptions = {
     processPriority: effectivePriority,
     uvThreadpoolSize: effectiveUvThreadpoolSize,
+    acquireStartup: require('./build-integrity.cjs').createStartupGate(),
   };
 
   try {
@@ -1087,7 +1105,8 @@ async function buildBriefs(options) {
       for (const item of failures) {
         const { task } = item;
         warn(`Retrying ${task.brief} in sequential mode...`);
-        cleanBuildOutput(task.buildPath);
+        // Preserve the last output for diagnosis; freshness validation ensures
+        // it cannot satisfy the retry. Each retry gets its own start timestamp.
 
         const retryStartedAt = Date.now();
         await runBuildTask(task, cocosPath, runtimeOptions);
